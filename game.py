@@ -1,64 +1,139 @@
-import pygame
-import sys
+import hashlib
+from typing import Any
+from typing import Dict
+from typing import Optional
+from typing import Union
 
-# 初始化pygame
-pygame.init()
+from ..util.color import AnsiColor
+from ..util.color import colorize
+from ..util.path import convert_local_os_path
 
-# 设置窗口大小
-screen_width = 800
-screen_height = 600
-screen = pygame.display.set_mode((screen_width, screen_height))
-pygame.display.set_caption("飞机大战")
 
-# 设置颜色
-WHITE = (255, 255, 255)
-BLUE = (0, 0, 255)
+class PotentialSecret:
+    """This custom data type represents a string found, matching the
+    plugin rules defined in SecretsCollection, that has the potential
+    to be a secret that we actually care about.
 
-# 玩家飞机类
-class Player(pygame.sprite.Sprite):
-    def __init__(self):
-        super().__init__()
-        self.image = pygame.Surface([50, 50])
-        self.image.fill(BLUE)
-        self.rect = self.image.get_rect()
-        self.rect.center = (screen_width // 2, screen_height - 50)
-    
-    def update(self):
-        keys = pygame.key.get_pressed()
-        if keys[pygame.K_LEFT]:
-            self.rect.x -= 5
-        if keys[pygame.K_RIGHT]:
-            self.rect.x += 5
-        # 防止飞机移出屏幕
-        if self.rect.left < 0:
-            self.rect.left = 0
-        if self.rect.right > screen_width:
-            self.rect.right = screen_width
+    "Potential" is the operative word here, because of the nature of
+    false positives.
 
-# 创建玩家飞机实例
-player = Player()
-all_sprites = pygame.sprite.Group()
-all_sprites.add(player)
+    We use this custom class so that we can more easily generate data
+    structures and do object-based comparisons with other PotentialSecrets,
+    without actually knowing what the secret is.
+    """
 
-# 游戏主循环
-running = True
-while running:
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            running = False
-    
-    # 更新所有精灵的位置
-    all_sprites.update()
-    
-    # 清屏
-    screen.fill(WHITE)
-    
-    # 绘制所有精灵
-    all_sprites.draw(screen)
-    
-    # 更新显示
-    pygame.display.flip()
+    def __init__(
+        self,
+        type: str,
+        filename: str,
+        secret: str,
+        line_number: int = 0,
+        is_secret: Optional[bool] = None,
+        is_verified: bool = False,
+    ) -> None:
+        """
+        :param type: human-readable secret type, defined by the plugin
+            that generated this PotentialSecret. e.g. "High Entropy String"
+        :param filename: name of file that this secret was found
+        :param secret: the actual secret identified
+        :param line_number: location of secret, within filename.
+            Merely used as a reference for easy triage.
+        :param is_secret: whether or not the secret is a true- or false- positive
+        :param is_verified: whether the secret has been externally verified
+        """
+        self.type = type
+        self.filename = filename
+        self.line_number = line_number
+        self.set_secret(secret)
+        self.is_secret = is_secret
+        self.is_verified = is_verified
 
-# 退出游戏
-pygame.quit()
-sys.exit()
+        # If two PotentialSecrets have the same values for these fields,
+        # they are considered equal. Note that line numbers aren't included
+        # in this, because line numbers are subject to change.
+        self.fields_to_compare = ['filename', 'secret_hash', 'type']
+
+    def set_secret(self, secret: str) -> None:
+        self.secret_hash: str = self.hash_secret(secret)
+
+        # Note: Originally, we never wanted to keep the secret value in memory,
+        #       after finding it in the codebase. However, to support verifiable
+        #       secrets (and avoid the pain of re-scanning again), we need to
+        #       keep the plaintext in memory as such.
+        #
+        #       This value should never appear in the baseline though, seeing that
+        #       we don't want to create a file that contains all plaintext secrets
+        #       in the repository.
+        self.secret_value: Optional[str] = secret
+
+    @staticmethod
+    def hash_secret(secret: str) -> str:
+        """This offers a way to coherently test this class, without mocking self.secret_hash."""
+        return hashlib.sha1(secret.encode('utf-8')).hexdigest()
+
+    @classmethod
+    def load_secret_from_dict(cls, data: Dict[str, Union[str, int, bool]]) -> 'PotentialSecret':
+        """Custom JSON decoder"""
+        kwargs: Dict[str, Any] = {
+            'type': str(data['type']),
+            'filename': convert_local_os_path(str(data['filename'])),
+            'secret': 'will be replaced',
+        }
+
+        # Optional parameters
+        for parameter in {
+            'line_number',
+            'is_secret',
+            'is_verified',
+        }:
+            if parameter in data:
+                kwargs[parameter] = data[parameter]
+
+        output = cls(**kwargs)
+        output.secret_value = None
+        output.secret_hash = str(data['hashed_secret'])
+
+        return output
+
+    def json(self) -> Dict[str, Union[str, int, bool]]:
+        """Custom JSON encoder"""
+        attributes: Dict[str, Union[str, int, bool]] = {
+            'type': self.type,
+            'filename': self.filename,
+            'hashed_secret': self.secret_hash,
+            'is_verified': self.is_verified,
+        }
+
+        if hasattr(self, 'line_number') and self.line_number:
+            attributes['line_number'] = self.line_number
+
+        if hasattr(self, 'is_secret') and self.is_secret is not None:
+            attributes['is_secret'] = self.is_secret
+
+        return attributes
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, PotentialSecret):
+            return NotImplemented
+
+        return all(
+            getattr(self, field) == getattr(other, field)
+            for field in self.fields_to_compare
+        )
+
+    def __ne__(self, other: Any) -> bool:
+        return not self.__eq__(other)
+
+    def __hash__(self) -> int:
+        return hash(
+            tuple(
+                getattr(self, x)
+                for x in self.fields_to_compare
+            ),
+        )
+
+    def __str__(self) -> str:
+        return (
+            f'Secret Type: {colorize(self.type, AnsiColor.BOLD)}\n'
+            f'Location:    {self.filename}:{self.line_number}\n'
+        )
