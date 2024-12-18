@@ -1,14 +1,8 @@
-    - repo: https://github.com/AnnaNielili/mytest  
-      rev: v1.0 # Use the ref you want to point at
-      hooks:
-          - id: trailing-whitespace
-          - id: end-of-file-fixer
-          - id: check-yaml
-          - id: check-added-large-files
-          - id: check-merge-conflict
-          - id: check-ast
-          - id: double-quote-string-fixer
-          - id: debug-statements
-          - id: check-toml
-          - id: check-json
-          - id: check-xml
+repos:
+-   repo: local
+    hooks:
+    -   id: detect-secrets
+        name: detect-secrets
+        language: python
+        entry: detect-secrets-hook
+        args: ['--baseline', '.secrets.baseline']
