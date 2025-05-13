@@ -438,7 +438,7 @@ clickhouse:
   # -- ClickHouse HTTP port to connect to.
   httpPort: 8123
   # -- ClickHouse native port to connect to.
-  nativePort: 9000
+  nativePort: 9009
 
   # Authentication configuration
   auth:
